@@ -48,4 +48,9 @@ tagging:
 
 llm:
   model: "gemini-2.0-flash"
-  temperature: 0.0
+  temperature: 0.75
+
+scheduling:
+  enabled: false
+  interval_hours: 2
+  pull_limit: 5

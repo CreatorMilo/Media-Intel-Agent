@@ -2,6 +2,7 @@ import sqlite3
 import json
 import os
 from datetime import datetime
+from dateutil import parser
 
 class Storage:
     def __init__(self, db_path="data/news.db"):
@@ -49,25 +50,36 @@ class Storage:
             if 'image_url' not in columns:
                 cursor.execute("ALTER TABLE articles ADD COLUMN image_url TEXT")
 
+            # Normalize published_date to YYYY-MM-DD for easier filtering
+            date_str = article_data.get('published_date', '')
+            try:
+                # Common RSS date formats can be complex; let's attempt to parse
+                dt = parser.parse(date_str)
+                iso_date = dt.strftime('%Y-%m-%d')
+            except:
+                iso_date = datetime.now().strftime('%Y-%m-%d')
+
             cursor.execute('''
-                INSERT INTO articles (title, url, published_date, content, summary, tags, relevance_score, category, image_url, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR IGNORE INTO articles (
+                    title, url, published_date, content, summary, tags, 
+                    relevance_score, category, image_url, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
-                article_data.get('title'),
-                article_data.get('url'),
-                article_data.get('published_date'),
-                article_data.get('content'),
-                article_data.get('summary'),
+                article_data['title'],
+                article_data['url'],
+                iso_date,
+                article_data['content'],
+                article_data.get('summary', ''),
                 json.dumps(article_data.get('tags', [])),
-                article_data.get('relevance_score'),
-                article_data.get('category'),
+                article_data.get('relevance_score', 'Low'),
+                article_data.get('category', 'Uncategorized'),
                 article_data.get('image_url'),
                 datetime.now().isoformat()
             ))
             conn.commit()
             return cursor.lastrowid
-        except sqlite3.IntegrityError:
-            # Article with this URL already exists
+        except sqlite3.Error as e:
+            print(f"Database error: {e}")
             return None
         finally:
             conn.close()
@@ -80,7 +92,7 @@ class Storage:
         conn.close()
         return exists
 
-    def get_articles(self, limit=50, relevance=None, category=None):
+    def get_articles(self, limit=50, relevance=None, category=None, start_date=None, end_date=None):
         conn = sqlite3.connect(self.db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
@@ -97,6 +109,14 @@ class Storage:
             conditions.append('category = ?')
             params.append(category)
             
+        if start_date:
+            conditions.append('published_date >= ?')
+            params.append(start_date)
+            
+        if end_date:
+            conditions.append('published_date <= ?')
+            params.append(end_date)
+            
         if conditions:
             query += ' WHERE ' + ' AND '.join(conditions)
             
@@ -110,10 +130,18 @@ class Storage:
         articles = []
         for row in rows:
             article = dict(row)
-            article['tags'] = json.loads(article['tags'])
+            article['tags'] = json.loads(article['tags'] or '[]')
             articles.append(article)
             
         return articles
+
+    def get_unique_categories(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('SELECT DISTINCT category FROM articles WHERE category IS NOT NULL AND category != ""')
+        rows = cursor.fetchall()
+        conn.close()
+        return [row[0] for row in rows]
 
     def search_articles(self, query_text):
         # Simple LIKE search for now
@@ -135,7 +163,25 @@ class Storage:
         articles = []
         for row in rows:
             article = dict(row)
-            article['tags'] = json.loads(article['tags'])
+            article['tags'] = json.loads(article['tags'] or '[]')
             articles.append(article)
             
         return articles
+
+    def delete_article(self, article_id):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM articles WHERE id = ?', (article_id,))
+        conn.commit()
+        changes = conn.total_changes
+        conn.close()
+        return changes > 0
+
+    def delete_all_articles(self):
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        cursor.execute('DELETE FROM articles')
+        conn.commit()
+        changes = conn.total_changes
+        conn.close()
+        return changes

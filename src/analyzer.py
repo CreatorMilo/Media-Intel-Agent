@@ -1,7 +1,7 @@
 import os
 import json
 import yaml
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,14 +12,10 @@ class ContentAnalyzer:
         self.api_key = os.getenv("GEMINI_API_KEY")
         
         if self.api_key:
-            genai.configure(api_key=self.api_key)
-            # Use a model that supports JSON mode if available, or just standard Gemini Pro
-            model_name = self.config.get('llm', {}).get('model', 'gemini-1.5-flash')
-            self.model = genai.GenerativeModel(model_name,
-                generation_config={"response_mime_type": "application/json"}
-            )
+            self.client = genai.Client(api_key=self.api_key)
+            self.model_name = self.config.get('llm', {}).get('model', 'gemini-1.5-flash')
         else:
-            self.model = None
+            self.client = None
             print("Warning: No GEMINI_API_KEY found. Running in mock mode.")
 
     def _load_config(self, path):
@@ -27,14 +23,25 @@ class ContentAnalyzer:
             return yaml.safe_load(f)
 
     def analyze_article(self, article):
-        if not self.model:
+        if not self.client:
             return self._mock_analyze(article)
 
         prompt = self._construct_prompt(article)
         
         try:
-            response = self.model.generate_content(prompt)
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config={
+                    "response_mime_type": "application/json"
+                }
+            )
+            
+            # The new SDK parses text automatically if response_mime_type is set, 
+            # but let's be safe and check response.text or use response.parsed if supported
+            # For now, response.text + json.loads is robust
             result = json.loads(response.text)
+            
             if not isinstance(result, dict):
                 print(f"Warning: LLM returned non-dict response: {result}")
                 return self._mock_analyze(article)
@@ -42,6 +49,7 @@ class ContentAnalyzer:
         except Exception as e:
             print(f"Error analyzing article: {e}")
             return self._mock_analyze(article)
+
 
     def _construct_prompt(self, article):
         tagging_config = self.config.get('tagging', {})

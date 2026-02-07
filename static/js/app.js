@@ -68,16 +68,67 @@ document.addEventListener('DOMContentLoaded', () => {
     // Feed
     const feedContainer = document.getElementById('feed-container');
     const refreshBtn = document.getElementById('refresh-btn');
+    const deleteAllBtn = document.getElementById('delete-all-btn');
+    const filterCategory = document.getElementById('filter-category');
+    const filterStartDate = document.getElementById('filter-start-date');
+    const filterEndDate = document.getElementById('filter-end-date');
+    const clearFiltersBtn = document.getElementById('clear-filters-btn');
+
+    // Persistence: Load filters from localStorage
+    function loadSavedFilters() {
+        const saved = localStorage.getItem('feedFilters');
+        if (saved) {
+            const filters = JSON.parse(saved);
+            filterCategory.value = filters.category || '';
+            filterStartDate.value = filters.start_date || '';
+            filterEndDate.value = filters.end_date || '';
+        }
+    }
+
+    function saveCurrentFilters() {
+        const filters = {
+            category: filterCategory.value,
+            start_date: filterStartDate.value,
+            end_date: filterEndDate.value
+        };
+        localStorage.setItem('feedFilters', JSON.stringify(filters));
+    }
 
     async function loadArticles() {
+        saveCurrentFilters();
         feedContainer.innerHTML = '<p>Loading articles...</p>';
         try {
-            const response = await fetch('/api/articles');
+            const params = new URLSearchParams();
+            if (filterCategory.value) params.append('category', filterCategory.value);
+            if (filterStartDate.value) params.append('start_date', filterStartDate.value);
+            if (filterEndDate.value) params.append('end_date', filterEndDate.value);
+
+            const url = `/api/articles?${params.toString()}`;
+            const response = await fetch(url);
             const articles = await response.json();
             renderArticles(articles);
         } catch (error) {
             feedContainer.innerHTML = '<p>Error loading articles.</p>';
             console.error(error);
+        }
+    }
+
+    async function loadCategories() {
+        try {
+            const response = await fetch('/api/categories');
+            const categories = await response.json();
+
+            const currentVal = filterCategory.value || (JSON.parse(localStorage.getItem('feedFilters')) || {}).category;
+            filterCategory.innerHTML = '<option value="">All Categories</option>';
+            categories.forEach(cat => {
+                const opt = document.createElement('option');
+                opt.value = cat;
+                opt.innerText = cat;
+                filterCategory.appendChild(opt);
+            });
+            if (currentVal) filterCategory.value = currentVal;
+        } catch (error) {
+            console.error('Error loading categories:', error);
         }
     }
 
@@ -89,9 +140,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         articles.forEach(article => {
-            // FILTER: Skip low relevance articles
             const score = article.relevance_score ? article.relevance_score.toLowerCase() : 'low';
-            if (score.includes('low')) return;
+            // REMOVED: Automatic low filter to give user control
 
             const card = document.createElement('div');
             card.classList.add('article-card');
@@ -124,8 +174,28 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div class="tags-container">
                     ${tagsHtml}
                 </div>
+                <div class="article-actions">
+                    <button class="delete-article-btn" data-id="${article.id}">
+                        Delete
+                    </button>
+                </div>
             `;
             feedContainer.appendChild(card);
+        });
+
+        // Add delete listeners
+        document.querySelectorAll('.delete-article-btn').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                const id = e.target.getAttribute('data-id');
+                if (confirm('Delete this article?')) {
+                    try {
+                        const res = await fetch(`/api/articles/${id}`, { method: 'DELETE' });
+                        if (res.ok) loadArticles();
+                    } catch (err) {
+                        console.error(err);
+                    }
+                }
+            });
         });
     }
 
@@ -137,6 +207,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const data = await response.json();
             alert(`Ingestion complete. ${data.new_articles} new articles.`);
             loadArticles();
+            loadCategories();
         } catch (error) {
             alert('Error during ingestion.');
             console.error(error);
@@ -146,9 +217,45 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    deleteAllBtn.addEventListener('click', async () => {
+        if (confirm('Are you sure you want to clear ALL articles? This cannot be undone.')) {
+            try {
+                const res = await fetch('/api/articles', { method: 'DELETE' });
+                if (res.ok) {
+                    const data = await res.json();
+                    alert(`Deleted ${data.deleted_count} articles.`);
+                    loadArticles();
+                    loadCategories();
+                }
+            } catch (err) {
+                console.error(err);
+            }
+        }
+    });
+
+    // Filter event listeners
+    filterCategory.addEventListener('change', loadArticles);
+    filterStartDate.addEventListener('change', loadArticles);
+    filterEndDate.addEventListener('change', loadArticles);
+
+    clearFiltersBtn.addEventListener('click', () => {
+        filterCategory.value = '';
+        filterStartDate.value = '';
+        filterEndDate.value = '';
+        loadArticles();
+    });
+
+    // Initial load
+    loadSavedFilters();
+    loadCategories();
+    loadArticles();
+
     // Settings
     const configEditor = document.getElementById('config-editor');
     const saveConfigBtn = document.getElementById('save-config-btn');
+    const scheduleEnabled = document.getElementById('schedule-enabled');
+    const scheduleInterval = document.getElementById('schedule-interval');
+    const scheduleLimit = document.getElementById('schedule-limit');
     const statusBar = document.getElementById('status-bar');
 
     async function loadConfig() {
@@ -156,17 +263,50 @@ document.addEventListener('DOMContentLoaded', () => {
             const response = await fetch('/api/config');
             const data = await response.json();
             configEditor.value = data.config;
+
+            // Simple parsing for scheduling UI (regex for safety)
+            const enabledMatch = data.config.match(/scheduling:\s*\n\s*enabled:\s*(true|false)/);
+            const intervalMatch = data.config.match(/interval_hours:\s*(\d+)/);
+            const limitMatch = data.config.match(/pull_limit:\s*(\d+)/);
+
+            if (enabledMatch) scheduleEnabled.checked = enabledMatch[1] === 'true';
+            if (intervalMatch) scheduleInterval.value = intervalMatch[1];
+            if (limitMatch) scheduleLimit.value = limitMatch[1];
+
         } catch (error) {
             console.error(error);
         }
     }
 
     saveConfigBtn.addEventListener('click', async () => {
+        let currentYaml = configEditor.value;
+
+        // Update YAML with UI values before saving
+        const enabled = scheduleEnabled.checked;
+        const interval = scheduleInterval.value;
+        const limit = scheduleLimit.value;
+
+        // Update or insert scheduling block
+        if (currentYaml.includes('scheduling:')) {
+            currentYaml = currentYaml.replace(/enabled:\s*(true|false)/, `enabled: ${enabled}`);
+            currentYaml = currentYaml.replace(/interval_hours:\s*(\d+)/, `interval_hours: ${interval}`);
+            if (currentYaml.includes('pull_limit:')) {
+                currentYaml = currentYaml.replace(/pull_limit:\s*(\d+)/, `pull_limit: ${limit}`);
+            } else {
+                currentYaml = currentYaml.replace(/(interval_hours:.*)/, `$1\n    pull_limit: ${limit}`);
+            }
+        } else {
+            // Append if missing
+            currentYaml += `\nscheduling:\n  enabled: ${enabled}\n  interval_hours: ${interval}\n  pull_limit: ${limit}\n`;
+        }
+
+        configEditor.value = currentYaml;
+
         try {
             const response = await fetch('/api/config', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ config: configEditor.value })
+                body: JSON.stringify({ config: currentYaml })
             });
 
             if (response.ok) {
@@ -181,6 +321,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     function showStatus(msg, type) {
+
         statusBar.innerText = msg;
         statusBar.className = `status-bar ${type}`;
         setTimeout(() => {

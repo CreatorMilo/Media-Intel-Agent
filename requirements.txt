@@ -2,9 +2,11 @@ feedparser
 requests
 pyyaml
 python-dotenv
-google-generativeai
+google-genai
 beautifulsoup4
 fastapi
 uvicorn
 pydantic
 duckduckgo-search
+apscheduler
+python-dateutil

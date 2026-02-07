@@ -47,7 +47,7 @@ class RSSFetcher:
                             break
                 
                 # If no image found in standard fields, try to find the first img tag in content
-                if not image_url and content:
+                if not image_url and content and ('<' in content and '>' in content):
                     from bs4 import BeautifulSoup
                     soup = BeautifulSoup(content, 'html.parser')
                     img_tag = soup.find('img')
